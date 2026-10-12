@@ -24,6 +24,9 @@ Bluetooth: hci0: Opcode 0x0c03 failed: -110
 or
 Bluetooth: hci0: Opcode 0x0c25 failed: -110
 Can't init device hci0: Connection timed out (110)
+or
+Set Event Filter (0x03|0x0005) -> Status: Invalid HCI Command Parameters (0x12)
+Can't init device hci0: Invalid argument (22)
 ```
 
 These are cheap clone chips (Barrot 8041a02 and similar, usually sold as a
@@ -42,7 +45,12 @@ enough for this hardware. This patch additionally:
   0x0c46. 0x0c25 is deliberately left advertised: since v6.15 the core
   treats an unsupported Read Voice Setting as "no SCO" and zeroes the SCO
   buffer count, which disables HFP audio;
-* fixes the fragile USB runtime-PM suspend workaround;
+* intercepts `Set Event Filter` (`0x0c05` / `0x03|0x0005`), which clones like
+  `bcdDevice=0x8891` fail with status `0x12` (`Invalid HCI Command Parameters`),
+  and overrides it to success (`0x00`), fixing `Can't init device hci0: Invalid argument (22)`;
+* limits the fragile USB runtime-PM force-suspend workaround strictly to
+  controllers known to require it (`bcdDevice` `0x0134` and `0x7558`), preventing
+  runtime-PM hangs/warnings on newer clone variants like `0x8891`;
 * auto-recovers with a USB reset from init failures and command timeouts,
   including a dongle that answers nothing at all — not even the very first
   `Reset` (0x0c03) — instead of leaving the controller stuck.

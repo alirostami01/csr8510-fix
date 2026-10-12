@@ -2362,6 +2362,15 @@ static int btusb_recv_event_csr(struct hci_dev *hdev, struct sk_buff *skb)
 		if (csr_mask_commands)
 			btusb_csr_mask_commands(hdev, skb);
 		goto done;
+	case HCI_OP_SET_EVENT_FLT:
+		if (skb->len >= sizeof(*hdr) + sizeof(*cc) + 1) {
+			__u8 *status = skb->data + sizeof(*hdr) + sizeof(*cc);
+			if (*status != 0x00) {
+				bt_dev_info(hdev, "CSR: overriding Set Event Filter error 0x%02x to success", *status);
+				*status = 0x00;
+			}
+		}
+		goto done;
 	case HCI_OP_READ_VOICE_SETTING:
 		expected_plen = sizeof(*cc) + 3; /* status + __le16 */
 		break;
@@ -2550,54 +2559,56 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 		 * apply this initialization quirk to every controller that gets here,
 		 * it should be harmless. The alternative is to not work at all.
 		 */
-		btusb_log_csr_pm_state(hdev, data, "before allow", 0);
-		pm_runtime_allow(&data->udev->dev);
-		btusb_log_csr_pm_state(hdev, data, "after allow", 0);
+		if (bcdDevice == 0x0134 || bcdDevice == 0x7558) {
+			btusb_log_csr_pm_state(hdev, data, "before allow", 0);
+			pm_runtime_allow(&data->udev->dev);
+			btusb_log_csr_pm_state(hdev, data, "after allow", 0);
 
-		/* autosuspend_check() refuses while an interface needs remote
-		 * wakeup or holds an autopm reference. Any reference here is
-		 * usb_probe_interface()'s, held across probe, so wait for it
-		 * to go rather than drop a reference we do not own.
-		 */
-		data->intf->needs_remote_wakeup = 0;
-		for (waited = 0; waited < 200 &&
-		     atomic_read(&data->intf->dev.power.usage_count); waited += 10)
-			msleep(10);
-		if (atomic_read(&data->intf->dev.power.usage_count))
-			bt_dev_warn(hdev, "CSR: interface still busy after %d ms", waited);
-		btusb_log_csr_pm_state(hdev, data, "pre-suspend", 0);
+			/* autosuspend_check() refuses while an interface needs remote
+			 * wakeup or holds an autopm reference. Any reference here is
+			 * usb_probe_interface()'s, held across probe, so wait for it
+			 * to go rather than drop a reference we do not own.
+			 */
+			data->intf->needs_remote_wakeup = 0;
+			for (waited = 0; waited < 200 &&
+			     atomic_read(&data->intf->dev.power.usage_count); waited += 10)
+				msleep(10);
+			if (atomic_read(&data->intf->dev.power.usage_count))
+				bt_dev_warn(hdev, "CSR: interface still busy after %d ms", waited);
+			btusb_log_csr_pm_state(hdev, data, "pre-suspend", 0);
 
-		ret = pm_runtime_force_suspend(&data->udev->dev);
-		if (ret < 0) {
-			/* Transient -EBUSY during boot; retry once. */
-			btusb_log_csr_pm_state(hdev, data, "force_suspend failed; retrying", ret);
-			msleep(100);
 			ret = pm_runtime_force_suspend(&data->udev->dev);
+			if (ret < 0) {
+				/* Transient -EBUSY during boot; retry once. */
+				btusb_log_csr_pm_state(hdev, data, "force_suspend failed; retrying", ret);
+				msleep(100);
+				ret = pm_runtime_force_suspend(&data->udev->dev);
+			}
+			/* Wake the device back up right away. Clones come back with a
+			 * half-dead radio if they are left suspended for long.
+			 */
+			if (usb_autopm_get_interface(data->intf) == 0)
+				usb_autopm_put_interface_no_suspend(data->intf);
+			data->intf->needs_remote_wakeup = 1;
+
+			btusb_log_csr_pm_state(hdev, data, "after force_suspend", ret);
+
+			if (ret >= 0) {
+				msleep(200);
+				ret = pm_runtime_force_resume(&data->udev->dev);
+				btusb_log_csr_pm_state(hdev, data, "after force_resume", ret);
+			} else {
+				/* force_suspend() re-enables runtime PM on failure. */
+				bt_dev_warn(hdev, "CSR: force_suspend failed; skipping one-shot suspend");
+			}
+
+			pm_runtime_forbid(&data->udev->dev);
+			btusb_log_csr_pm_state(hdev, data, "after forbid", 0);
+
+			/* Re-enable autosuspend if this was requested */
+			if (enable_autosuspend)
+				usb_enable_autosuspend(data->udev);
 		}
-		/* Wake the device back up right away. Clones come back with a
-		 * half-dead radio if they are left suspended for long.
-		 */
-		if (usb_autopm_get_interface(data->intf) == 0)
-			usb_autopm_put_interface_no_suspend(data->intf);
-		data->intf->needs_remote_wakeup = 1;
-
-		btusb_log_csr_pm_state(hdev, data, "after force_suspend", ret);
-
-		if (ret >= 0) {
-			msleep(200);
-			ret = pm_runtime_force_resume(&data->udev->dev);
-			btusb_log_csr_pm_state(hdev, data, "after force_resume", ret);
-		} else {
-			/* force_suspend() re-enables runtime PM on failure. */
-			bt_dev_warn(hdev, "CSR: force_suspend failed; skipping one-shot suspend");
-		}
-
-		pm_runtime_forbid(&data->udev->dev);
-		btusb_log_csr_pm_state(hdev, data, "after forbid", 0);
-
-		/* Re-enable autosuspend if this was requested */
-		if (enable_autosuspend)
-			usb_enable_autosuspend(data->udev);
 	}
 
 	kfree_skb(skb);
