@@ -51,7 +51,14 @@ enough for this hardware. This patch additionally:
 * limits the fragile USB runtime-PM force-suspend workaround strictly to
   controllers known to require it (`bcdDevice` `0x0134` and `0x7558`), preventing
   runtime-PM hangs/warnings on newer clone variants like `0x8891`;
-* auto-recovers with a USB reset from init failures and command timeouts,
+* intercepts `Read Transmit Power Level` (`0x0c2d`), which clones like `bcdDevice=0x8891`
+  hang on when queried periodically by sound daemons (PipeWire/PulseAudio/blueman),
+  immediately returning a synthetic Command Complete event (0 dBm) and clearing its
+  advertised bit in Supported Commands, preventing `command 0x0c2d tx timeout` and
+  preventing audio headsets from disconnecting every few minutes;
+* requires 5 consecutive command timeouts before escalating to a hard USB device reset,
+  avoiding dropping active connections on isolated non-critical timeouts;
+* auto-recovers with a USB reset from init failures and persistent command timeouts,
   including a dongle that answers nothing at all — not even the very first
   `Reset` (0x0c03) — instead of leaving the controller stuck.
 
