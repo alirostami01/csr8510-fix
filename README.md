@@ -151,6 +151,56 @@ sudo ./install.sh
 > after each system update, or keep the built `.ko` on `/home` — that
 > partition survives updates — and load it from a systemd unit.
 
+### NixOS
+
+NixOS manages kernel modules declaratively rather than using DKMS.
+
+#### Standard `configuration.nix` (channels / non-flake):
+
+```nix
+{ config, pkgs, ... }:
+
+let
+  csr8510-fix = config.boot.kernelPackages.callPackage (fetchTarball "https://github.com/hhsnake/csr8510-fix/archive/main.tar.gz") { };
+  # Or from a local clone:
+  # csr8510-fix = config.boot.kernelPackages.callPackage /path/to/csr8510-fix { };
+in
+{
+  boot.extraModulePackages = [ csr8510-fix ];
+
+  hardware.bluetooth.enable = true;
+  hardware.bluetooth.powerOnBoot = true;
+}
+```
+
+#### With Nix Flakes:
+
+In your `flake.nix`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    csr8510-fix.url = "github:hhsnake/csr8510-fix";
+  };
+
+  outputs = { self, nixpkgs, csr8510-fix, ... }: {
+    nixosConfigurations.myhostname = nixpkgs.lib.nixosSystem {
+      modules = [
+        csr8510-fix.nixosModules.default
+        ./configuration.nix
+      ];
+    };
+  };
+}
+```
+
+Rebuild your system:
+
+```bash
+sudo nixos-rebuild switch
+```
+
 The module is installed to `/lib/modules/<ver>/updates/dkms/` (takes
 precedence over the stock module, nothing in the kernel is overwritten)
 and rebuilt automatically by DKMS on every kernel update.
